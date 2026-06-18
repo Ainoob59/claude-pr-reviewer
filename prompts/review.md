@@ -57,6 +57,11 @@ Flag only what you can justify from the code you actually read. Categories, high
   sure enough to assert it. Between ~50–70%, post it as a **question** ("Is X guaranteed non-null
   here? If a concurrent request can reach this, Y."), not a claim. **Never invent a bug in code you
   did not read.** Hallucinated findings are the worst outcome — they destroy trust.
+- **Beware "global" false positives.** A finding whose validity depends on code OUTSIDE the diff
+  (validation done upstream, a lock held by the caller, an invariant guaranteed elsewhere) is the most
+  common false positive. Before asserting it, go read that other code. If you can't confirm it from
+  code you actually read, either phrase it as a question or drop it — do not assert it. The author has
+  context you don't; respect that.
 - **Nothing below P2 as an inline comment.** P3/nits go only in the collapsed `<details>` of the
   summary, and cap them at 5 ("+N similar" for the rest).
 - **Cap inline comments at ~6.** If you found more real P0–P2 issues, keep the top ones inline and
@@ -116,13 +121,18 @@ Use `mcp__github_inline_comment__create_inline_comment`. Each one:
 
 ## Incremental / re-verify (when a previous review of yours exists)
 
-This is the closing half of the `review → fix → re-verify` loop. When you find your earlier review:
+This is the closing half of the loop, and the **primary** flow is **author fixes → you verify** (the
+author has the full context; `@claude fix` is only an optional helper for obvious mechanical fixes).
+When you find your earlier review:
 1. **Reconcile every prior finding** against the current code and mark it in the summary table:
    ✅ fixed · ⚠️ partially fixed (say what's left) · ❌ still present · 🆕 regression introduced by
-   the fix.
-2. Only add **new** findings for code changed since your last review — don't re-litigate unchanged
+   the fix · 💬 **dismissed by author**.
+2. **Respect author pushback.** If the author replied to a finding explaining it's intended / a false
+   positive, or a `REVIEW.md` rule covers it, mark it 💬 **accepted — closed by discussion** and
+   **do not raise it again** in this or future reviews. Don't argue a settled point.
+3. Only add **new** findings for code changed since your last review — don't re-litigate unchanged
    lines.
-3. Suppress new nits after the first round; surface Important findings only. Converge, don't nag.
-4. Update the sticky summary in place; update the verdict.
+4. Suppress new nits after the first round; surface Important findings only. Converge, don't nag.
+5. Update the sticky summary in place; update the verdict.
 
 Keep the whole thing tight. The best review is the one the author reads top-to-bottom and acts on.

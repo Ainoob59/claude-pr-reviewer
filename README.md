@@ -64,15 +64,29 @@ C'est tout. Ouvre une PR → 👀 puis la review apparaît.
 
 ---
 
-## Utilisation (commandes dans une PR)
+## Boucle recommandée : author fixe → Claude vérifie
+
+Le flux par défaut (et le plus sûr) :
+1. Claude **review** la PR (findings + sévérités).
+2. **Toi** (ou ton Claude Code local, qui a tout le contexte) corriges — en acceptant ou en
+   **rejetant** les findings. Un finding « global » peut être un faux positif : tu décides.
+3. Tu **push** → Claude **re-review** et réconcilie chaque finding : ✅ corrigé · ⚠️ partiel ·
+   ❌ présent · 🆕 régression · 💬 rejeté par l'auteur (clos par discussion, plus re-râlé).
+
+> Pourquoi pas tout déléguer à `@claude fix` ? Le fixer a le contexte du *code* mais pas ton
+> *intention* ni le design global ; auto-corriger un faux positif modifie du code correct. `@claude fix`
+> reste donc une **option** pour les corrections **mécaniques évidentes** (clé en dur, requête à
+> paramétrer…), pas le défaut. Il commite sur la PR — jamais de merge auto, tu relis.
+
+## Commandes dans une PR
 
 | Action | Effet |
 |---|---|
-| *(ouvrir une PR / pousser un commit)* | Review auto (sauf PR triviale : docs-only / < 25 lignes). |
+| *(ouvrir une PR / pousser un commit)* | Review / re-review auto (sauf PR triviale : docs-only / < 25 lignes). |
 | Label **`claude-assist`** | Force une **review profonde Opus** (ignore le skip). |
 | `@claude review` | Re-review à la demande (Opus). |
-| `@claude fix` | Claude corrige les findings, pousse les commits → re-review auto. |
 | `@claude <question>` | Q&A sur la PR (read-only). |
+| `@claude fix` *(option)* | Corrections **mécaniques** uniquement ; commite sur la branche PR → re-review auto. À réserver aux findings évidents. |
 
 ### Régler le comportement par repo
 - `CLAUDE.md` à la racine : conventions du projet (respectées nativement).

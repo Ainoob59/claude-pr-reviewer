@@ -240,9 +240,24 @@ jobs:
       id-token: write
       actions: read
     steps:
-      - name: Checkout
+      # Sur un issue_comment, il faut résoudre la BRANCHE de la PR pour que les
+      # commits de Claude atterrissent dessus (sinon checkout = branche par défaut).
+      - name: Résoudre la branche de la PR
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          branch="$(gh pr view "$PR" -R "$REPO" --json headRefName --jq .headRefName)"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "Fix sur la branche: $branch (PR #$PR)"
+
+      - name: Checkout de la branche PR
         uses: actions/checkout@v6
         with:
+          ref: ${{ steps.pr.outputs.branch }}
           fetch-depth: 0
 
       - name: Charger les prompts du repo central
@@ -258,15 +273,24 @@ jobs:
         run: |
           gh api -X POST "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" -f content=eyes >/dev/null 2>&1 || true
 
+      - name: Configurer git (pour les commits de Claude)
+        run: |
+          git config user.name  "claude[bot]"
+          git config user.email "claude[bot]@users.noreply.github.com"
+
       - name: Construire le prompt fix
         id: p
         env:
           REPO: ${{ github.repository }}
+          PR: ${{ github.event.issue.number }}
+          BRANCH: ${{ steps.pr.outputs.branch }}
         run: |
           set -euo pipefail
           {
             echo 'PROMPT<<CLAUDE_EOF'
             echo "REPO: $REPO"
+            echo "PR NUMBER: $PR"
+            echo "PR BRANCH (déjà checkout, pousse ici): $BRANCH"
             echo ""
             cat .reviewer/prompts/fix.md
             echo 'CLAUDE_EOF'
