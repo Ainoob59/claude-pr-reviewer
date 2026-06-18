@@ -1,0 +1,244 @@
+name: Claude Reviewer (reusable)
+
+# Reusable workflow appelé par chaque repo cible via un caller de ~20 lignes.
+# Toute la logique vit ICI (source unique). Mettre à jour le reviewer = éditer ce
+# fichier + les prompts/, puis déplacer le tag `v1`. Les repos pointent sur @v1.
+#
+# Auth : abonnement Claude Max via CLAUDE_CODE_OAUTH_TOKEN (claude setup-token).
+# AUCUN ANTHROPIC_API_KEY nulle part → zéro facturation API/credits.
+
+on:
+  workflow_call:
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+
+# Ref du repo central d'où charger les prompts. Doit matcher le @ref du caller.
+env:
+  REVIEWER_REPO: Ainoob59/claude-pr-reviewer
+  REVIEWER_REF: v1
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  # L0 — gate déterministe (bash pur, 0 token). Décide : on review ? quel mode ?
+  # quel modèle ? Skip les PR triviales pour économiser le quota.
+  # ───────────────────────────────────────────────────────────────────────────
+  triage:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      run: ${{ steps.t.outputs.run }}
+      mode: ${{ steps.t.outputs.mode }}
+      model: ${{ steps.t.outputs.model }}
+    steps:
+      - id: t
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          # On passe les valeurs par env (jamais inliné dans le bash) → pas
+          # d'injection de script via le corps d'un commentaire malveillant.
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          LABEL_NAME: ${{ github.event.label.name }}
+          PR_DRAFT: ${{ github.event.pull_request.draft }}
+          PR_NUM_PR: ${{ github.event.pull_request.number }}
+          PR_NUM_IC: ${{ github.event.issue.number }}
+          IS_PR_COMMENT: ${{ github.event.issue.pull_request.url }}
+        run: |
+          set -euo pipefail
+          RUN=false; MODE=""; MODEL="claude-sonnet-4-6"; PR=""
+
+          if [ "$EVENT_NAME" = "issue_comment" ]; then
+            # Ne traiter que les commentaires SUR une PR contenant le trigger.
+            if [ -n "${IS_PR_COMMENT:-}" ]; then
+              low=$(printf '%s' "${COMMENT_BODY:-}" | tr '[:upper:]' '[:lower:]')
+              case "$low" in
+                *"@claude fix"*)    MODE=fix;         MODEL=claude-opus-4-8;  RUN=true ;;
+                *"@claude review"*) MODE=deep-review; MODEL=claude-opus-4-8;  RUN=true ;;
+                *"@claude"*)        MODE=ask;         MODEL=claude-sonnet-4-6; RUN=true ;;
+              esac
+              PR="$PR_NUM_IC"
+            fi
+
+          elif [ "$EVENT_NAME" = "pull_request" ] || [ "$EVENT_NAME" = "pull_request_target" ]; then
+            PR="$PR_NUM_PR"
+            if [ "$EVENT_ACTION" = "labeled" ]; then
+              # Le label force une review profonde (Opus, ignore le skip).
+              if [ "${LABEL_NAME:-}" = "claude-assist" ]; then
+                MODE=deep-review; MODEL=claude-opus-4-8; RUN=true
+              fi
+            else
+              MODE=review; RUN=true
+              # Skip les drafts (sauf review forcée par label/commande).
+              [ "${PR_DRAFT:-false}" = "true" ] && RUN=false
+            fi
+          fi
+
+          # Pour les modes review/deep-review : mesurer le diff (garde-fous + modèle).
+          if [ "$RUN" = "true" ] && { [ "$MODE" = "review" ] || [ "$MODE" = "deep-review" ]; }; then
+            total=0; nfiles=0; nonskip=0; sensitive=0
+            while IFS=$'\t' read -r fn ch; do
+              [ -z "${fn:-}" ] && continue
+              nfiles=$((nfiles+1)); total=$((total + ${ch:-0}))
+              case "$fn" in
+                *.lock|*/dist/*|*/build/*|*/node_modules/*|*.min.js|*.min.css|*.generated.*|\
+                */__snapshots__/*|*.snap|package-lock.json|pnpm-lock.yaml|yarn.lock|\
+                *.svg|*.png|*.jpg|*.jpeg|*.gif|*.webp|*.pdf|*.map|*.lockb) : ;;     # générés/binaires
+                *.md|*.mdx|*.txt|docs/*|*/docs/*) : ;;                              # docs → non bloquant
+                *) nonskip=$((nonskip+1)) ;;
+              esac
+              case "$fn" in
+                *auth*|*Auth*|*login*|*session*|*token*|*password*|*payment*|*Payment*|*billing*|\
+                *checkout*|*migration*|*Migration*|*security*|*Security*|*crypto*|*secret*|\
+                *.github/workflows/*|*Dockerfile*|*.tf|*terraform*|*permission*|*rbac*) sensitive=1 ;;
+              esac
+            done < <(gh api --paginate "repos/$REPO/pulls/$PR/files" \
+                       --jq '.[] | [.filename, (.additions + .deletions)] | @tsv')
+
+            # Garde-fou anti-trivial (review auto seulement, pas deep-review).
+            if [ "$MODE" = "review" ]; then
+              if [ "$nonskip" -eq 0 ] || [ "$total" -lt 25 ]; then
+                RUN=false
+                echo "Triage: PR triviale (nonskip=$nonskip, total=$total) → skip"
+              fi
+            fi
+
+            # Escalade Opus : gros diff OU chemin sensible OU deep-review.
+            if [ "$sensitive" -eq 1 ] || [ "$total" -gt 600 ] || [ "$nfiles" -gt 12 ] || [ "$MODE" = "deep-review" ]; then
+              MODEL=claude-opus-4-8
+            fi
+            echo "Triage: mode=$MODE files=$nfiles lines=$total sensitive=$sensitive → model=$MODEL run=$RUN"
+          fi
+
+          {
+            echo "run=$RUN"
+            echo "mode=$MODE"
+            echo "model=$MODEL"
+          } >> "$GITHUB_OUTPUT"
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Review / deep-review / ask  (lecture seule + écriture de commentaires)
+  # ───────────────────────────────────────────────────────────────────────────
+  review:
+    needs: triage
+    if: needs.triage.outputs.run == 'true' && needs.triage.outputs.mode != 'fix'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+    steps:
+      - name: Checkout du repo cible (le code à reviewer)
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Charger les prompts du repo central
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.REVIEWER_REPO }}
+          ref: ${{ env.REVIEWER_REF }}
+          path: .reviewer
+
+      - name: Accusé de réception 👀
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" = "issue_comment" ]; then
+            gh api -X POST "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" -f content=eyes >/dev/null 2>&1 || true
+          else
+            gh api -X POST "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/reactions" -f content=eyes >/dev/null 2>&1 || true
+          fi
+
+      - name: Construire le prompt
+        id: p
+        env:
+          MODE: ${{ needs.triage.outputs.mode }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          case "$MODE" in
+            ask) f=.reviewer/prompts/ask.md ;;
+            *)   f=.reviewer/prompts/review.md ;;
+          esac
+          {
+            echo 'PROMPT<<CLAUDE_EOF'
+            echo "REPO: $REPO"
+            echo "MODE: $MODE"
+            echo ""
+            cat "$f"
+            echo 'CLAUDE_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Claude review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          track_progress: true
+          prompt: ${{ steps.p.outputs.PROMPT }}
+          claude_args: |
+            --model ${{ needs.triage.outputs.model }}
+            --max-turns 25
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr review:*),Bash(gh api:*),Bash(gh search:*),Bash(grep:*),Bash(rg:*),Bash(find:*),Bash(cat:*),Bash(ls:*)"
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Fix  (module boucle review→fix→re-vérif). Écrit du code et push sur la branche.
+  # Déclenché uniquement par « @claude fix ». Permissions write isolées ici.
+  # ───────────────────────────────────────────────────────────────────────────
+  fix:
+    needs: triage
+    if: needs.triage.outputs.run == 'true' && needs.triage.outputs.mode == 'fix'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Charger les prompts du repo central
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.REVIEWER_REPO }}
+          ref: ${{ env.REVIEWER_REF }}
+          path: .reviewer
+
+      - name: Accusé de réception 👀
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api -X POST "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" -f content=eyes >/dev/null 2>&1 || true
+
+      - name: Construire le prompt fix
+        id: p
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          {
+            echo 'PROMPT<<CLAUDE_EOF'
+            echo "REPO: $REPO"
+            echo ""
+            cat .reviewer/prompts/fix.md
+            echo 'CLAUDE_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Claude fix
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: ${{ steps.p.outputs.PROMPT }}
+          claude_args: |
+            --model claude-opus-4-8
+            --max-turns 40
+            --allowedTools "Edit,Write,Read,mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(git checkout:*),Bash(git status:*),Bash(git diff:*),Bash(grep:*),Bash(rg:*),Bash(find:*),Bash(cat:*),Bash(ls:*)"

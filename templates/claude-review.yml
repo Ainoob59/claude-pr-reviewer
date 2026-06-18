@@ -1,0 +1,27 @@
+# Claude PR Reviewer — caller (à déposer dans CHAQUE repo cible).
+# Fichier volontairement minimal : toute la logique vit dans le repo central
+# Ainoob59/claude-pr-reviewer. Tu ne retouches jamais ce fichier ; les évolutions
+# se font au centre (tag v1). Onboarding : voir scripts/onboard.sh.
+#
+# Pré-requis dans le repo : secret CLAUDE_CODE_OAUTH_TOKEN (posé par onboard.sh).
+name: Claude PR Reviewer
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
+  issue_comment:
+    types: [created]
+
+jobs:
+  claude:
+    # Ne réveille le workflow réutilisable que sur les événements pertinents :
+    #  - toute PR (sauf l'event "labeled" qui n'est utile que pour claude-assist)
+    #  - ajout du label claude-assist (review profonde forcée)
+    #  - commentaire « @claude … » sur une PR (review / fix / ask)
+    if: >
+      (github.event_name == 'pull_request' && github.event.action != 'labeled') ||
+      (github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'claude-assist') ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '@claude'))
+    uses: Ainoob59/claude-pr-reviewer/.github/workflows/review.reusable.yml@v1
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
