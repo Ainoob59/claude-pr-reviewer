@@ -29,9 +29,11 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      run: ${{ steps.t.outputs.run }}
       mode: ${{ steps.t.outputs.mode }}
-      model: ${{ steps.t.outputs.model }}
+      # Le modèle/le run peuvent être affinés par l'étage Haiku (sur le contenu du
+      # diff). S'il ne tourne pas (ou échoue), on retombe sur l'heuristique bash.
+      model: ${{ steps.classify.outputs.model || steps.t.outputs.model }}
+      run: ${{ steps.classify.outputs.run || steps.t.outputs.run }}
     steps:
       - id: t
         env:
@@ -49,7 +51,7 @@ jobs:
           IS_PR_COMMENT: ${{ github.event.issue.pull_request.url }}
         run: |
           set -euo pipefail
-          RUN=false; MODE=""; MODEL="claude-sonnet-4-6"; PR=""
+          RUN=false; MODE=""; MODEL="claude-sonnet-4-6"; PR=""; NEEDS_CLASSIFY=false
 
           if [ "$EVENT_NAME" = "issue_comment" ]; then
             # Ne traiter que les commentaires SUR une PR contenant le trigger.
@@ -110,14 +112,51 @@ jobs:
             if [ "$sensitive" -eq 1 ] || [ "$total" -gt 600 ] || [ "$nfiles" -gt 12 ] || [ "$MODE" = "deep-review" ]; then
               MODEL=claude-opus-4-8
             fi
-            echo "Triage: mode=$MODE files=$nfiles lines=$total sensitive=$sensitive → model=$MODEL run=$RUN"
+            echo "Triage L0 (bash): mode=$MODE files=$nfiles lines=$total sensitive=$sensitive → model=$MODEL run=$RUN"
+
+            # En mode review auto et non-trivial : confier le choix du modèle à
+            # l'étage Haiku (jugement sur le CONTENU). deep-review reste Opus forcé.
+            if [ "$MODE" = "review" ] && [ "$RUN" = "true" ]; then NEEDS_CLASSIFY=true; fi
           fi
 
           {
             echo "run=$RUN"
             echo "mode=$MODE"
             echo "model=$MODEL"
+            echo "pr=$PR"
+            echo "needs_classify=$NEEDS_CLASSIFY"
           } >> "$GITHUB_OUTPUT"
+
+      # L1 — triage par CONTENU (Haiku lit le diff). Best-effort : toute erreur →
+      # on garde le modèle de l'heuristique bash, la review tourne quand même.
+      - id: classify
+        if: steps.t.outputs.needs_classify == 'true'
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ steps.t.outputs.pr }}
+        run: |
+          set -uo pipefail   # pas de -e : on ne casse jamais le run sur un échec Haiku
+          if ! npm install -g @anthropic-ai/claude-code >/dev/null 2>&1; then
+            echo "Haiku: install CLI KO → fallback bash"; exit 0
+          fi
+          DIFF="$(gh pr diff "$PR" -R "$REPO" 2>/dev/null | head -c 50000)"
+          if [ -z "$DIFF" ]; then echo "Haiku: diff vide → fallback bash"; exit 0; fi
+          PROMPT='You are a code-review triage classifier. Read the unified diff piped via stdin and output EXACTLY ONE WORD, nothing else:
+          OPUS   — the change is logically complex OR touches risk-sensitive behavior in its CONTENT: authentication, authorization, payments/billing/money, cryptography, secrets or API keys, database migrations, concurrency, access control, or untrusted input reaching a dangerous sink.
+          SONNET — a normal change.
+          SKIP   — purely cosmetic with zero behavioral risk (formatting, comments, trivial renames).
+          Answer with only one of: OPUS, SONNET, SKIP.'
+          VERDICT="$(printf '%s' "$DIFF" | claude -p "$PROMPT" --model claude-haiku-4-5-20251001 2>/dev/null | tr '[:lower:]' '[:upper:]' || true)"
+          echo "Haiku verdict: '$VERDICT'"
+          case "$VERDICT" in
+            *OPUS*)   echo "model=claude-opus-4-8"   >> "$GITHUB_OUTPUT"; echo "→ Opus (contenu sensible/complexe)" ;;
+            *SKIP*)   echo "run=false" >> "$GITHUB_OUTPUT"; echo "model=claude-sonnet-4-6" >> "$GITHUB_OUTPUT"; echo "→ skip (cosmétique)" ;;
+            *SONNET*) echo "model=claude-sonnet-4-6" >> "$GITHUB_OUTPUT"; echo "→ Sonnet" ;;
+            *)        echo "→ verdict illisible, fallback bash" ;;
+          esac
+          exit 0
 
   # ───────────────────────────────────────────────────────────────────────────
   # Review / deep-review / ask  (lecture seule + écriture de commentaires)

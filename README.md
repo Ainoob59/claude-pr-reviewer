@@ -81,17 +81,24 @@ C'est tout. Ouvre une PR → 👀 puis la review apparaît.
 
 ---
 
-## Orchestration du modèle (triage)
+## Orchestration du modèle (triage à 2 étages)
 
-| Situation | Modèle |
+**L0 — bash (gratuit, ~5s)** : filtre grossier sur taille + chemins.
+- Docs-only ou < 25 lignes (review auto) → **skip** (économie quota).
+- `claude-assist` / `@claude review` / `@claude fix` → **Opus** forcé.
+
+**L1 — Haiku (≈ gratuit, sur le contenu)** : pour les reviews auto non-triviales, Haiku lit le **vrai
+diff** et tranche `OPUS` / `SONNET` / `SKIP` selon le contenu (argent, auth, sécurité, migrations,
+concurrence…), pas seulement les noms de fichiers. Best-effort : si Haiku échoue, on retombe sur
+l'heuristique bash ci-dessous, la review tourne quand même.
+
+| Situation (fallback bash si Haiku indispo) | Modèle |
 |---|---|
 | PR normale | `claude-sonnet-4-6` |
-| Diff > ~600 lignes **ou** > 12 fichiers | `claude-opus-4-8` |
-| Chemin sensible (`*auth*`, `*payment*`, `*migration*`, `*security*`, `.github/workflows/`, IaC…) | `claude-opus-4-8` |
+| Diff > ~600 lignes **ou** > 12 fichiers **ou** chemin sensible | `claude-opus-4-8` |
 | `claude-assist` / `@claude review` / `@claude fix` | `claude-opus-4-8` |
-| Docs-only ou < 25 lignes (review auto) | **skip** (économie quota) |
 
-Seuils ajustables dans `.github/workflows/review.reusable.yml` (job `triage`).
+Seuils + prompt Haiku ajustables dans `.github/workflows/review.reusable.yml` (job `triage`).
 
 ---
 
