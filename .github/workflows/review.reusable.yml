@@ -141,7 +141,7 @@ jobs:
           if ! npm install -g @anthropic-ai/claude-code >/dev/null 2>&1; then
             echo "Haiku: install CLI KO → fallback bash"; exit 0
           fi
-          DIFF="$(gh pr diff "$PR" -R "$REPO" 2>/dev/null | head -c 50000)"
+          DIFF="$(gh pr diff "$PR" -R "$REPO" 2>/dev/null | head -c 50000 || true)"
           if [ -z "$DIFF" ]; then echo "Haiku: diff vide → fallback bash"; exit 0; fi
           PROMPT='You are a code-review triage classifier. Read the unified diff piped via stdin and output EXACTLY ONE WORD, nothing else:
           OPUS   — the change is logically complex OR touches risk-sensitive behavior in its CONTENT: authentication, authorization, payments/billing/money, cryptography, secrets or API keys, database migrations, concurrency, access control, or untrusted input reaching a dangerous sink.
