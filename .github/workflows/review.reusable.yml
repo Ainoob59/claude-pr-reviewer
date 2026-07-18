@@ -49,9 +49,6 @@ jobs:
           PR_NUM_PR: ${{ github.event.pull_request.number }}
           PR_NUM_IC: ${{ github.event.issue.number }}
           IS_PR_COMMENT: ${{ github.event.issue.pull_request.url }}
-          # Avant/après du push, fournis par GitHub uniquement sur action=synchronize.
-          EVENT_BEFORE: ${{ github.event.before }}
-          EVENT_AFTER: ${{ github.event.after }}
         run: |
           set -euo pipefail
           RUN=false; MODE=""; MODEL="claude-sonnet-4-6"; PR=""; NEEDS_CLASSIFY=false
@@ -103,42 +100,11 @@ jobs:
             done < <(gh api --paginate "repos/$REPO/pulls/$PR/files" \
                        --jq '.[] | [.filename, (.additions + .deletions)] | @tsv')
 
-            # Sur un re-push (synchronize) sur une PR déjà ouverte, le garde-fou
-            # anti-trivial doit regarder ce que CE push a changé, pas le cumul de
-            # toute la PR — sinon un fixup d'une ligne re-déclenche une review
-            # complète tant que la PR reste non-triviale globalement (jamais
-            # amorti). Best-effort : si le compare échoue (fork, refs
-            # manquantes…) → on retombe sur le total cumulé, jamais un skip par
-            # erreur (fail-open, pas fail-closed).
-            gate_total=$total; gate_nonskip=$nonskip
-            if [ "$MODE" = "review" ] && [ "$EVENT_ACTION" = "synchronize" ] \
-               && [ -n "${EVENT_BEFORE:-}" ] \
-               && [ "$EVENT_BEFORE" != "0000000000000000000000000000000000000000" ]; then
-              if compare_json="$(gh api "repos/$REPO/compare/$EVENT_BEFORE...$EVENT_AFTER" 2>/dev/null)"; then
-                inc_total=0; inc_nonskip=0
-                while IFS=$'\t' read -r fn ch; do
-                  [ -z "${fn:-}" ] && continue
-                  inc_total=$((inc_total + ${ch:-0}))
-                  case "$fn" in
-                    *.lock|*/dist/*|*/build/*|*/node_modules/*|*.min.js|*.min.css|*.generated.*|\
-                    */__snapshots__/*|*.snap|package-lock.json|pnpm-lock.yaml|yarn.lock|\
-                    *.svg|*.png|*.jpg|*.jpeg|*.gif|*.webp|*.pdf|*.map|*.lockb) : ;;
-                    *.md|*.mdx|*.txt|docs/*|*/docs/*) : ;;
-                    *) inc_nonskip=$((inc_nonskip+1)) ;;
-                  esac
-                done < <(printf '%s' "$compare_json" | jq -r '.files[]? | [.filename, (.additions + .deletions)] | @tsv')
-                gate_total=$inc_total; gate_nonskip=$inc_nonskip
-                echo "Triage: incrémental depuis ${EVENT_BEFORE:0:7} → nonskip=$inc_nonskip lignes=$inc_total (PR totale: nonskip=$nonskip lignes=$total)"
-              else
-                echo "Triage: compare ${EVENT_BEFORE:0:7}...${EVENT_AFTER:0:7} indisponible → fallback total PR"
-              fi
-            fi
-
             # Garde-fou anti-trivial (review auto seulement, pas deep-review).
             if [ "$MODE" = "review" ]; then
-              if [ "$gate_nonskip" -eq 0 ] || [ "$gate_total" -lt 25 ]; then
+              if [ "$nonskip" -eq 0 ] || [ "$total" -lt 25 ]; then
                 RUN=false
-                echo "Triage: push trivial (nonskip=$gate_nonskip, total=$gate_total) → skip"
+                echo "Triage: PR triviale (nonskip=$nonskip, total=$total) → skip"
               fi
             fi
 
