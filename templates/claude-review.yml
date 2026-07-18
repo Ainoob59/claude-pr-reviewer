@@ -8,14 +8,17 @@ name: Claude PR Reviewer
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, labeled]
+    # Pas de "synchronize" : la review tourne à l'ouverture, pas à chaque push.
+    # Pour re-vérifier après des corrections, commenter "@claude review".
+    types: [opened, reopened, ready_for_review, labeled]
   issue_comment:
     types: [created]
 
 jobs:
   claude:
     # Ne réveille le workflow réutilisable que sur les événements pertinents :
-    #  - toute PR (sauf l'event "labeled" qui n'est utile que pour claude-assist)
+    #  - ouverture/réouverture d'une PR (sauf l'event "labeled" qui n'est utile
+    #    que pour claude-assist) — PAS les pushes suivants sur la même PR
     #  - ajout du label claude-assist (review profonde forcée)
     #  - commentaire « @claude … » sur une PR (review / fix / ask)
     if: >
