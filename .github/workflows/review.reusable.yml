@@ -17,6 +17,11 @@ on:
 env:
   REVIEWER_REPO: Ainoob59/claude-pr-reviewer
   REVIEWER_REF: v1
+  # Kill switch global : passe à "false" pour désactiver le reviewer sur TOUS
+  # les repos pointant @v1 (sans rien toucher dans chaque repo). Remettre à
+  # "true" pour réactiver. N'oublie pas de déplacer le tag v1 (voir README,
+  # section Maintenance) pour que le changement soit pris en compte.
+  REVIEWER_ENABLED: "false"
 
 jobs:
   # ───────────────────────────────────────────────────────────────────────────
@@ -52,6 +57,12 @@ jobs:
         run: |
           set -euo pipefail
           RUN=false; MODE=""; MODEL="claude-sonnet-4-6"; PR=""; NEEDS_CLASSIFY=false
+
+          if [ "${REVIEWER_ENABLED}" = "false" ]; then
+            echo "Triage: reviewer désactivé temporairement (REVIEWER_ENABLED=false) → skip"
+            { echo "run=false"; echo "mode="; echo "model=$MODEL"; echo "pr="; echo "needs_classify=false"; } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           if [ "$EVENT_NAME" = "issue_comment" ]; then
             # Ne traiter que les commentaires SUR une PR contenant le trigger.

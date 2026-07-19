@@ -118,6 +118,9 @@ Seuils + prompt Haiku ajustables dans `.github/workflows/review.reusable.yml` (j
 
 ## Maintenance
 
+- **Désactiver temporairement le reviewer (tous repos)** : passe `REVIEWER_ENABLED: "false"` dans
+  `env:` de `.github/workflows/review.reusable.yml`, commit, puis **déplace le tag `v1`**. Remets
+  `"true"` (+ déplace `v1`) pour réactiver. Rien à toucher dans les repos cibles.
 - **Faire évoluer le reviewer** : édite `prompts/*.md` ou le workflow ici, commit, puis **déplace le
   tag `v1`** :
   ```bash
